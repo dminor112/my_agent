@@ -1,0 +1,23 @@
+# 私有配置、依赖环境和解释器缓存
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+# 本地执行状态与数据库，不能发布到 GitHub
+*.sqlite3*
+*.sqlite
+*.db
+# 运行/评测结果留在本地；仅保留可分享的验证说明
+reports/*
+!reports/VERIFICATION.md
+.coverage
+.DS_Store
+*.log
+*.zip

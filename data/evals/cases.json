@@ -1,0 +1,8 @@
+[
+  {"name":"Agent循环基础","query":"Agent 循环和工作流有什么区别？","required_sources":["agent-loop"],"expect_no_evidence":false},
+  {"name":"工具契约","query":"工具设计的 Schema 与引用来源如何校验？","required_sources":["tool-design"],"expect_no_evidence":false},
+  {"name":"可靠恢复","query":"持久化检查点、恢复和幂等要注意什么？","required_sources":["reliability"],"expect_no_evidence":false},
+  {"name":"评测边界","query":"评测与可观测性有哪些要点？","required_sources":["evaluation"],"expect_no_evidence":false},
+  {"name":"无结果","query":"量子纠缠超导材料临界温度","required_sources":[],"expect_no_evidence":true},
+  {"name":"英语检索","query":"Schema","required_sources":["tool-design"],"expect_no_evidence":false}
+]

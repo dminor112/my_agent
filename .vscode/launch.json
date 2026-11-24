@@ -1,0 +1,126 @@
+{
+    // 在 VS Code 中打开 my_agent 文件夹，选择下方配置后按 F5。
+    // 需要安装 Python 与 Python Debugger 扩展；密钥保留在项目 .env 中。
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python 调试程序: 当前文件",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "01 原生 Agent（Mock，推荐先用）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "my_agent",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "args": ["native", "--mode", "mock", "${input:learningQuery}"],
+            "env": {
+                "AGENT_MODE": "mock",
+                "RUN_TIMEOUT_SECONDS": "1800",
+                "REQUEST_TIMEOUT_SECONDS": "300"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            // 此项调用真实模型，可能产生费用；Key 由 load_settings 读取 .env。
+            "name": "01 原生 Agent（GLM，真实调用）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "my_agent",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "args": ["native", "--mode", "glm", "${input:learningQuery}"],
+            "env": {
+                "AGENT_MODE": "glm",
+                "RUN_TIMEOUT_SECONDS": "1800",
+                "REQUEST_TIMEOUT_SECONDS": "300"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "02 SDK Agent（Mock）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "my_agent",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "args": ["sdk", "--mode", "mock", "${input:learningQuery}"],
+            "env": {
+                "AGENT_MODE": "mock",
+                "RUN_TIMEOUT_SECONDS": "1800",
+                "REQUEST_TIMEOUT_SECONDS": "300"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "02 SDK Agent（GLM，真实调用）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "my_agent",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "args": ["sdk", "--mode", "glm", "${input:learningQuery}"],
+            "env": {
+                "AGENT_MODE": "glm",
+                "RUN_TIMEOUT_SECONDS": "1800",
+                "REQUEST_TIMEOUT_SECONDS": "300"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            // 与常规 8003 服务分开：端口 8004、独立数据库，不启用 reload/多 worker。
+            "name": "03 后端服务（Mock，8004，独立数据库）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "my_agent",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "args": ["serve", "--mode", "mock", "--port", "8004"],
+            "env": {
+                "AGENT_MODE": "mock",
+                "AGENT_DB_PATH": "${workspaceFolder}/data/debug.sqlite3",
+                "RUN_TIMEOUT_SECONDS": "1800",
+                "REQUEST_TIMEOUT_SECONDS": "300"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            // 两个后端调试配置共用 8004，不能同时启动；数据库按模式分开。
+            "name": "03 后端服务（GLM，8004，独立数据库）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "my_agent",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "args": ["serve", "--mode", "glm", "--port", "8004"],
+            "env": {
+                "AGENT_MODE": "glm",
+                "AGENT_DB_PATH": "${workspaceFolder}/data/debug-glm.sqlite3",
+                "RUN_TIMEOUT_SECONDS": "1800",
+                "REQUEST_TIMEOUT_SECONDS": "300"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "learningQuery",
+            "type": "promptString",
+            "description": "输入本次调试问题（GLM 配置会真实调用并可能收费）",
+            "default": "Agent 循环和工作流有什么区别？"
+        }
+    ]
+}
