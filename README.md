@@ -66,7 +66,7 @@ python -m pip install -r requirements.lock.txt
 python -m pip install -e '.[dev]'
 ```
 
-## 3. 六个阶段
+## 3. 七个阶段
 
 ### 01 原生 Agent Loop
 
@@ -155,6 +155,18 @@ plan 和 retrieve 是明确的代码逻辑；summarize 才调用模型。不要�
 `AsyncSqliteSaver` 持久化于 `data/graph.sqlite3`，人工确认使用 `interrupt`/`Command`。
 先掌握这些，再自行扩展并行检索或多 Agent；此仓库不预先增加无必要的多 Agent 架构。
 
+### 07 并行只读工具与延迟治理
+
+```bash
+python examples/07_parallel_tools.py
+```
+
+核心：`src/my_agent/native.py` 中的 `take_batch`、`prepare_batch`、`execute_job`。
+同一轮的只读工具可以并行，`submit_report` 仍独占一批；每个工具有独立超时。
+示例给读取加人为等待，串行约 0.45s、并行约 0.15s，说明加速来自等待重叠而非计算变快。
+三个必须显式设计的点：回填顺序按调用而不按完成、失败只影响自己那条、读取名额在并发前预留。
+同步工具经线程池执行；换掉 `max_parallel_tools=1` 即可退回旧行为做对照。
+
 ## 4. 放入自己的资料
 
 在 `data/corpus/` 新增 UTF-8 `.json`，结构为：
@@ -180,7 +192,7 @@ my_agent/
   pyproject.toml         # 包与开发配置
   requirements.lock.txt  # 此次验证的精确依赖版本
   src/my_agent/          # 模型、工具、执行、存储、服务、SDK、图、评测
-  examples/              # 01–06 学习入口
+  examples/              # 01–07 学习入口
   tests/                 # 全离线自动化测试
   data/corpus/           # 演示资料库
   data/evals/            # 评测题集
