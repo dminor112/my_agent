@@ -35,6 +35,10 @@ class Settings(BaseModel):
     max_turns: int = Field(default=10, ge=1, le=30)
     max_total_tokens: int = Field(default=30000, ge=100, le=1000000)
     max_context_chars: int = Field(default=60000, ge=1000, le=500000)
+    # 同一轮内的只读工具并行度；1 表示退回完全串行的旧行为。
+    max_parallel_tools: int = Field(default=3, ge=1, le=4)
+    # 单个工具的等待上限，避免一个卡住的调用拖垮整批。
+    tool_timeout: float = Field(default=20, gt=0, le=120)
     run_timeout: float = Field(default=120, gt=0, le=1800)
     max_concurrent_runs: int = Field(default=2, ge=1, le=8)
     # 服务令牌保护本地任务接口，与 GLM_API_KEY 的用途不同。
@@ -81,6 +85,8 @@ def load_settings(mode: str | None = None) -> Settings:
         "max_turns": "MAX_TURNS",
         "max_total_tokens": "MAX_TOTAL_TOKENS",
         "max_context_chars": "MAX_CONTEXT_CHARS",
+        "max_parallel_tools": "MAX_PARALLEL_TOOLS",
+        "tool_timeout": "TOOL_TIMEOUT_SECONDS",
         "run_timeout": "RUN_TIMEOUT_SECONDS",
         "max_concurrent_runs": "MAX_CONCURRENT_RUNS",
         "service_token": "AGENT_SERVICE_TOKEN",

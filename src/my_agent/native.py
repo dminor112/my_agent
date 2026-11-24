@@ -5,10 +5,14 @@
 可恢复状态保存在 AgentState；检查点回调决定如何持久化，事件回调决定如何观测。
 有待执行工具 pending 时先处理它们，避免恢复后重复请求同一轮模型提议。
 模型响应与数据库事务不是原子操作，崩溃窗口内仍可能重复模型调用和费用。
+
+阶段七补丁：同一轮内的只读工具可以并行，submit_report 仍独占执行。
+并行只缩短“等待”时间；工具回填顺序、证据名额和错误隔离都要显式设计。
 """
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 
@@ -50,6 +54,103 @@ EventSink = Callable[[str, dict], Awaitable[None]]
 async def noop(*args) -> None:
     """默认空回调：独立 CLI 示例不需要持久化或外部事件消费者。"""
     pass
+
+
+def take_batch(state: AgentState, limit: int) -> list[dict]:
+    """从 pending 头部取一批可并行执行的调用，并保持模型的原始顺序。
+
+    submit_report 会写入最终应用状态且应结束循环，因此作为批次边界独占执行；
+    否则可能出现“报告已接受、但同批其他工具仍在改证据”的模糊状态。
+    limit 只限制并行度，不改变剩余调用的先后；1 即退回逐步串行。
+    """
+    if not state.pending:
+        return []
+    first = state.pending[0]["function"].get("name", "")
+    if first == "submit_report":
+        return [state.pending[0]]
+    batch: list[dict] = []
+    for call in state.pending:
+        if call["function"].get("name", "") == "submit_report":
+            break
+        batch.append(call)
+        if len(batch) >= limit:
+            break
+    return batch
+
+
+def prepare_batch(batch: list[dict], state: AgentState) -> list[dict]:
+    """串行解析参数、做 Schema 校验并预留读取名额，再交给并行执行。
+
+    解析和名额检查放在并发之前，结果就不依赖线程完成顺序；
+    否则两个并发读取可能同时看到“还剩一格”而一起通过。
+    """
+    jobs: list[dict] = []
+    # 已读集合加本批预留，等价于“排队时先占号”。
+    reserved = set(state.evidence)
+    for call in batch:
+        name = call["function"].get("name", "")
+        job = {"call": call, "tool": name, "kind": "", "args": None, "output": None}
+        try:
+            # arguments 是模型生成的 JSON 字符串，必须先解析再做 Schema 校验。
+            # 不使用 eval，不根据模型名称反射任意函数，只允许以下三个分支。
+            args = json.loads(call["function"].get("arguments", "{}"))
+            if name == "search_documents":
+                job.update(kind="search", args=SearchArgs.model_validate(args))
+            elif name == "read_document":
+                parsed = ReadArgs.model_validate(args)
+                if len(reserved) >= 4 and parsed.document_id not in reserved:
+                    raise ToolError("最多读取 4 篇资料")
+                reserved.add(parsed.document_id)
+                job.update(kind="read", args=parsed)
+            elif name == "submit_report":
+                # 队列还有后续调用时不接受提交，避免成功报告后遗留未执行动作。
+                if len(state.pending) != 1:
+                    raise ToolError("submit_report 必须是当前单独的工具调用")
+                job.update(kind="submit", args=Report.model_validate(args))
+            else:
+                raise ToolError("工具不存在；只能调用已声明工具")
+        except (ValidationError, ValueError, TypeError) as exc:
+            # 工具错误是可恢复反馈，不是直接宣告任务失败；下一轮让模型修正。
+            # Pydantic 错误可能包含原始输入，只返回程序编写的通用提示。
+            job["output"] = {
+                "error": str(exc)
+                if isinstance(exc, ToolError)
+                else "工具参数不符合 Schema；请修正参数"
+            }
+        jobs.append(job)
+    return jobs
+
+
+async def execute_job(job: dict, corpus: Corpus, state: AgentState, settings: Settings) -> dict:
+    """执行一个已校验的工具调用，返回可回填给模型的输出字典。
+
+    同步检索/读取放到线程池：它们不是 CPU 密集任务，阻塞事件循环会让
+    “并行”失效。纯 Python 计算仍受 GIL 限制，并行不会让 CPU 时间减半。
+    超时只丢弃本次结果，已经写入的证据不回滚，模型需要自行处理不一致。
+    """
+    if job["output"] is not None:
+        return job["output"]
+    try:
+        if job["kind"] == "search":
+            matches = await asyncio.wait_for(
+                asyncio.to_thread(corpus.search, job["args"]), timeout=settings.tool_timeout
+            )
+            return {"matches": matches}
+        if job["kind"] == "read":
+            doc = await asyncio.wait_for(
+                asyncio.to_thread(corpus.read, job["args"]), timeout=settings.tool_timeout
+            )
+            state.evidence[doc["document_id"]] = doc
+            return {"document": doc}
+        # 提交只做纯内存校验，直接在事件循环执行，不需要线程池。
+        report = validate_report(job["args"], state.evidence)
+        state.report = report.model_dump()
+        return {"accepted": True}
+    except TimeoutError:
+        # 线程无法被强制终止，超时后它可能仍在后台跑完；这里只是不再等待。
+        return {"error": "工具执行超时；请缩小范围或稍后重试"}
+    except (ValidationError, ValueError, TypeError) as exc:
+        return {"error": str(exc) if isinstance(exc, ToolError) else "工具执行失败；请修正参数"}
 
 
 async def run_native(
@@ -142,56 +243,39 @@ async def run_native(
                 )
                 if not calls:
                     continue
-            # 顺序执行 pending 队列。此教学实现不并行工具，便于理解一致性。
-            call = state.pending[0]
-            name = call["function"].get("name", "")
-            state.tool_calls += 1
-            await emit("tool_started", {"tool": name})
-            try:
-                # arguments 是模型生成的 JSON 字符串，必须先解析再做 Schema 校验。
-                # 不使用 eval，不根据模型名称反射任意函数，只允许以下三个分支。
-                args = json.loads(call["function"].get("arguments", "{}"))
-                if name == "search_documents":
-                    matches = corpus.search(SearchArgs.model_validate(args))
-                    output = {"matches": matches}
-                elif name == "read_document":
-                    parsed = ReadArgs.model_validate(args)
-                    if len(state.evidence) >= 4 and parsed.document_id not in state.evidence:
-                        raise ToolError("最多读取 4 篇资料")
-                    doc = corpus.read(parsed)
-                    state.evidence[doc["document_id"]] = doc
-                    output = {"document": doc}
-                elif name == "submit_report":
-                    # 队列还有后续调用时不接受提交，避免成功报告后遗留未执行动作。
-                    if len(state.pending) != 1:
-                        raise ToolError("submit_report 必须是当前单独的工具调用")
-                    report = validate_report(Report.model_validate(args), state.evidence)
-                    state.report = report.model_dump()
-                    output = {"accepted": True}
-                else:
-                    raise ToolError("工具不存在；只能调用已声明工具")
-            except (ValidationError, ValueError, TypeError) as exc:
-                # 工具错误是可恢复反馈，不是直接宣告任务失败；下一轮让模型修正。
-                # Pydantic 错误可能包含原始输入，只返回程序编写的通用提示。
-                output = {
-                    "error": str(exc)
-                    if isinstance(exc, ToolError)
-                    else "工具参数不符合 Schema；请修正参数"
-                }
-                await emit("tool_error", {"tool": name, "error": output["error"]})
-            # 成功或失败结果都使用原 call_id 回填；否则模型无法理解哪次调用出错。
-            state.messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": json.dumps(output, ensure_ascii=False),
-                }
+            # 阶段七：取一批调用并行执行；单个工具失败不会中止同批其他工具。
+            batch = take_batch(state, settings.max_parallel_tools)
+            jobs = prepare_batch(batch, state)
+            started = time.monotonic()
+            for job in jobs:
+                await emit("tool_started", {"tool": job["tool"], "batch": len(jobs)})
+            # gather 按任务创建顺序返回结果，因此回填顺序与模型调用顺序一致。
+            outputs = await asyncio.gather(
+                *(execute_job(job, corpus, state, settings) for job in jobs)
             )
-            state.pending.pop(0)
-            # 消息、剩余工具、证据和累计用量必须作为同一份整体检查点保存。
-            # 先 pop 再保存，恢复时不会重复执行已经记录结果的本地只读工具。
+            for job, output in zip(jobs, outputs, strict=True):
+                # 用原 call_id 回填；模型靠它区分哪次调用成功或失败。
+                state.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": job["call"]["id"],
+                        "content": json.dumps(output, ensure_ascii=False),
+                    }
+                )
+                state.tool_calls += 1
+                await emit("tool_finished", {"tool": job["tool"]})
+                if "error" in output:
+                    await emit("tool_error", {"tool": job["tool"], "error": output["error"]})
+            state.pending = state.pending[len(batch) :]
+            # 整批完成后统一保存；批中途崩溃会重跑整批只读工具，但不会重复报告。
             await checkpoint(state.dump())
-            await emit("tool_finished", {"tool": name})
+            await emit(
+                "tool_batch_finished",
+                {
+                    "count": len(batch),
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
             if state.report:
                 await emit("report_ready", {"citations": len(state.report["citations"])})
                 return Report.model_validate(state.report), state
